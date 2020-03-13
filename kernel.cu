@@ -317,25 +317,22 @@ int main()
 	memset(h_dest, 0, d_ctx->size_bytes);
 
 	// Temporary results buffer.
-	uint32_t* h_tmp = new uint32_t[d_ctx->size_bytes];
-	memset(h_tmp, 0, d_ctx->size_bytes);
+	uint32_t* h_tmpsrc = new uint32_t[d_ctx->size_bytes];
+	memset(h_tmpsrc, 0, d_ctx->size_bytes);
+
+	begin = std::chrono::steady_clock::now();
 
 	// Copy the array to be sorted into the GPU buffer.
 	cudaMemcpy(d_ctx->d_src, h_src, d_ctx->size_bytes, cudaMemcpyHostToDevice);
 
-	begin = std::chrono::steady_clock::now();
-
-	while (d_ctx->running_threads >= HOST_MAX_NATIVE_THREADS * 32 /** 4 * 2 * 2*/)
+	while (d_ctx->running_threads >= HOST_MAX_NATIVE_THREADS * 32 /* Found this value to be good */)
 	{
 		// Figure out the total number of thread blocks needed for the computation.
 		d_ctx->total_blocks = d_ctx->running_threads / d_ctx->threads_per_block;
 		if (d_ctx->running_threads % d_ctx->threads_per_block != 0) ++d_ctx->total_blocks;
 
 		// Do a merge run.
-		auto tmp = std::chrono::steady_clock::now();
-
-		//device_merge_optimized << <d_ctx->total_blocks, d_ctx->threads_per_block, sizeof(merge_sort_ctx_t) >> > (d_ctx);
-		device_merge<< <d_ctx->total_blocks, d_ctx->threads_per_block >> > (d_ctx);
+		device_merge<< <d_ctx->total_blocks, d_ctx->threads_per_block>> > (d_ctx);
 		cudaDeviceSynchronize();
 		
 		// Update the sort status.
@@ -352,7 +349,7 @@ int main()
 	cout << chrono::duration_cast<chrono::milliseconds>(end - begin).count() << " ms" << endl;
 
 	// Copy the GPU results into host memory.
-	cudaMemcpy(h_tmp, d_ctx->d_dest, d_ctx->size_bytes, cudaMemcpyDeviceToHost);
+	cudaMemcpy(h_tmpsrc, d_ctx->d_dest, d_ctx->size_bytes, cudaMemcpyDeviceToHost);
 
 	// Copy the context into host memory (for better performance).
 	merge_sort_ctx_t h_ctx;
@@ -373,7 +370,7 @@ int main()
 			{
 				size_t left = (j * elems_per_thread * threads_per_batch) + (i * elems_per_thread);
 				size_t right = left + elems_per_thread;
-				threads.push_back(new thread(host_merge, h_dest, h_tmp, left, right));
+				threads.push_back(new thread(host_merge, h_dest, h_tmpsrc, left, right));
 			}
 			for (const auto& thread : threads)
 			{
@@ -386,11 +383,11 @@ int main()
 		h_ctx.run_size *= 2;
 		h_ctx.running_threads /= 2;
 
-		swap(h_tmp, h_dest);
+		swap(h_tmpsrc, h_dest);
 	}
 
 	// Unswap.
-	swap(h_tmp, h_dest);
+	swap(h_tmpsrc, h_dest);
 
 	end = std::chrono::steady_clock::now();
 

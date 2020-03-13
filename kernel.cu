@@ -7,6 +7,7 @@
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -130,7 +131,16 @@ __host__ void host_merge(uint32_t* dest, const uint32_t* src, const size_t left,
 	}
 }
 
-int main()
+void check_gpu_err()
+{
+	auto err = cudaGetLastError();
+	if (err != cudaSuccess)
+	{
+		cerr << cudaGetErrorName(err) << ": " << cudaGetErrorString(err) << endl;
+	}
+}
+
+int main() try
 {
 	std::chrono::steady_clock::time_point begin;
 	std::chrono::steady_clock::time_point end;
@@ -146,12 +156,14 @@ int main()
 
 	cout << "Sorting an array of "
 		<< N_ELEMENTS
-		<< " randomized 32-bit integers in random order"
+		<< " 32-bit random integers"
 		<< endl;
 
 	// Initial context on the host.
 	merge_sort_ctx_t* d_ctx;
 	cudaMallocManaged(&d_ctx, sizeof(merge_sort_ctx_t));
+	check_gpu_err();
+
 	d_ctx->elem_count = N_ELEMENTS;
 	d_ctx->size_bytes = d_ctx->elem_count * sizeof(uint32_t);
 	d_ctx->unmerged_chunks = d_ctx->elem_count / 2;
@@ -161,18 +173,16 @@ int main()
 	if (d_ctx->unmerged_chunks % d_ctx->threads_per_block != 0) ++d_ctx->total_thread_blocks;
 	// Allocate buffers in GPU memory.
 	cudaMalloc(&d_ctx->d_src, d_ctx->size_bytes);
+	check_gpu_err();
 	cudaMalloc(&d_ctx->d_dest, d_ctx->size_bytes);
+	check_gpu_err();
 
 	// Create the array to be sorted in host memory.
 	uint32_t* h_src = new uint32_t[d_ctx->size_bytes];
 	for (size_t i = 0; i < d_ctx->elem_count; ++i)
 	{
 		h_src[i] = (uint32_t)rand();
-		//h_src[i] = d_ctx->elem_count - 1 - i;
-		assert(h_src[i] == d_ctx->elem_count - 1 - i);
 	}
-	assert(h_src[0] == d_ctx->elem_count - 1);
-	assert(h_src[d_ctx->elem_count - 1] == 0);
 
 	// Destination buffer.
 	uint32_t* h_dest = new uint32_t[d_ctx->size_bytes];
@@ -190,6 +200,7 @@ int main()
 
 	// Copy the array to be sorted into GPU memory.
 	cudaMemcpy(d_ctx->d_src, h_src, d_ctx->size_bytes, cudaMemcpyHostToDevice);
+	check_gpu_err();
 
 	while (d_ctx->unmerged_chunks >= HOST_MAX_NATIVE_THREADS * 32 /* Found this value to be good */)
 	{
@@ -198,13 +209,15 @@ int main()
 		if (d_ctx->unmerged_chunks % d_ctx->threads_per_block != 0) ++d_ctx->total_thread_blocks;
 
 		// Do a merge run.
-		device_merge<< <d_ctx->total_thread_blocks, d_ctx->threads_per_block>> > (d_ctx);
+		device_merge<<<d_ctx->total_thread_blocks, d_ctx->threads_per_block>>>(d_ctx);
 		cudaDeviceSynchronize();
-		
-		// Update the status of the sort.
+		check_gpu_err();
+
 		d_ctx->elems_per_chunk *= 2;
 		d_ctx->unmerged_chunks /= 2;
 
+		// The temporary results in d_src aren't needed, so d_dest can be used as the source buffer
+		// for the next run and the data in d_src overwritten.
 		swap(d_ctx->d_src, d_ctx->d_dest);
 	}
 
@@ -215,10 +228,12 @@ int main()
 
 	// Copy the GPU results into host memory.
 	cudaMemcpy(h_tmpsrc, d_ctx->d_dest, d_ctx->size_bytes, cudaMemcpyDeviceToHost);
+	check_gpu_err();
 
 	// Copy the context into host memory (for better performance).
 	merge_sort_ctx_t h_ctx;
 	cudaMemcpy(&h_ctx, d_ctx, sizeof(merge_sort_ctx_t), cudaMemcpyDeviceToHost);
+	check_gpu_err();
 
 	vector<thread*> threads;
 
@@ -276,7 +291,9 @@ int main()
 
 		if (h_dest[i] < h_dest[i - 1])
 		{
+
 			cout << "ERROR IN OUTPUT (first erroneous index = " << i << ", value = " << h_dest[i] << ")!" << endl;
+
 			break;
 		}
 	}
@@ -327,11 +344,26 @@ int main()
 		<< endl;
 
 	cudaFree(d_ctx->d_src);
+	check_gpu_err();
 	cudaFree(d_ctx->d_dest);
+	check_gpu_err();
 	cudaFree(d_ctx);
+	check_gpu_err();
 	delete[] h_src;
 	delete[] h_dest;
-//	delete[] h_ctx;
+
+	cout << endl;
+	cout << "Press Enter to exit..." << endl;
+	std::string s;
+	std::getline(cin, s);
 
 	return 0;
+}
+catch (std::bad_alloc& e)
+{
+	cerr << "Memory allocation failed. Aborting execution." << endl;
+}
+catch (std::exception& e)
+{
+	cerr << "An unexpected exception occurred. Aborting execution." << endl;
 }

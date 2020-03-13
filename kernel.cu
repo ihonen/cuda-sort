@@ -167,7 +167,6 @@ __host__ void host_merge(uint32_t* dest, const uint32_t* src, const size_t left,
 			++right_head;
 		}
 	}
-
 }
 
 __global__ void device_merge_optimized(merge_sort_ctx_t* ctx)
@@ -286,7 +285,7 @@ int main()
     //const uint32_t N_ELEMENTS = 4194304;
 	const uint32_t N_ELEMENTS = 268435456;
 	//const uint32_t MAX_THREADS_PER_BLOCK = 16;
-	const uint32_t MAX_THREADS_PER_BLOCK = 16;
+	const uint32_t MAX_THREADS_PER_BLOCK = 8; // Experimental
 	const size_t HOST_MAX_NATIVE_THREADS = 8;
 
 	// Initial context on the host.
@@ -326,7 +325,7 @@ int main()
 
 	begin = std::chrono::steady_clock::now();
 
-	while (d_ctx->running_threads >= HOST_MAX_NATIVE_THREADS * 4 * 2 * 2)
+	while (d_ctx->running_threads >= HOST_MAX_NATIVE_THREADS * 32 /** 4 * 2 * 2*/)
 	{
 		// Figure out the total number of thread blocks needed for the computation.
 		d_ctx->total_blocks = d_ctx->running_threads / d_ctx->threads_per_block;
@@ -364,19 +363,25 @@ int main()
 	// Do the last runs on the CPU.
 	while (h_ctx.running_threads != 0)
 	{
-		for (size_t i = 0; i < h_ctx.running_threads; ++i)
-		{
-			size_t left = i * h_ctx.run_size * 2;
-			size_t right = left + h_ctx.run_size * 2;
-			threads.push_back(new thread(host_merge, h_dest, h_tmp, left, right));
-		}
+		const size_t elems_per_thread = h_ctx.elem_count / h_ctx.running_threads;
+		const size_t threads_per_batch = std::min(h_ctx.running_threads, HOST_MAX_NATIVE_THREADS);
+		const size_t thread_batches = std::max((size_t)1ULL, h_ctx.running_threads / threads_per_batch);
 
-		for (const auto& thread : threads)
+		for (size_t j = 0; j < thread_batches; ++j)
 		{
-			thread->join();
-			delete thread;
+			for (size_t i = 0; i < threads_per_batch; ++i)
+			{
+				size_t left = (j * elems_per_thread * threads_per_batch) + (i * elems_per_thread);
+				size_t right = left + elems_per_thread;
+				threads.push_back(new thread(host_merge, h_dest, h_tmp, left, right));
+			}
+			for (const auto& thread : threads)
+			{
+				thread->join();
+				delete thread;
+			}
+			threads.clear();
 		}
-		threads.clear();
 
 		h_ctx.run_size *= 2;
 		h_ctx.running_threads /= 2;

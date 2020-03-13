@@ -46,15 +46,6 @@ __device__ void print_array_device(uint32_t* arr, size_t size)
 	printf("\n");
 }
 
-__global__ void print_array_global(uint32_t* arr, size_t size)
-{
-	for (size_t i = 0; i < size; ++i)
-	{
-		printf("%*u", 5, arr[i]);
-	}
-	printf("\n");
-}
-
 void __host__ print_array_host(uint32_t* arr, size_t size)
 {
 	for (size_t i = 0; i < size; ++i)
@@ -64,85 +55,55 @@ void __host__ print_array_host(uint32_t* arr, size_t size)
 	printf("\n");
 }
 
-__device__ void merge_in_thread(uint32_t* dest, const uint32_t* src, const size_t left, const size_t right)
-{
-	const size_t mid = left + ((right - left) / 2);
-	size_t left_head = left;
-	size_t right_head = mid;
-	size_t write_head = left;
-
-	for (; write_head < right; ++write_head)
-	{
-		if (left_head < mid && (src[left_head] < src[right_head] || right_head >= right))
-		{
-			dest[write_head] = src[left_head];
-			++left_head;
-		}
-		else
-		{
-			dest[write_head] = src[right_head];
-			++right_head;
-		}
-	}
-
-	/*
-	while (left_head < mid && right_head < right)
-	{
-		if (src[left_head] <= src[right_head])
-		{
-			dest[write_head] = src[left_head];
-			++write_head;
-			++left_head;
-		}
-		else
-		{
-			dest[write_head] = src[right_head];
-			++write_head;
-			++right_head;
-		}
-	}
-
-	while (left_head < mid)
-	{
-		dest[write_head] = src[left_head];
-		++write_head;
-		++left_head;
-	}
-
-	while (right_head < right)
-	{
-		dest[write_head] = src[right_head];
-		++write_head;
-		++right_head;
-	}
-	*/
-}
-
 __global__ void device_merge(merge_sort_ctx_t* ctx)
 {
 	int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
 
+	uint32_t* d_src = ctx->d_src;
+	uint32_t* d_dest = ctx->d_dest;
+
 	if (ctx->running_threads > thread_id)
 	{
-		size_t left = thread_id * (ctx->run_size * 2);
-		size_t right = left + (ctx->run_size * 2);
+		size_t elems_per_thread = ctx->run_size * 2;
+		size_t left = thread_id * elems_per_thread;
+		size_t right = left + elems_per_thread;
+
 		const size_t mid = left + ((right - left) / 2);
 		size_t left_head = left;
 		size_t right_head = mid;
 		size_t write_head = left;
 
-		for (; write_head < right; ++write_head)
+		// Keep going until either (left or right) side is exhausted.
+		while (left_head < mid && right_head < right)
 		{
-			if (left_head < mid && (right_head >= right || ctx->d_src[left_head] <= ctx->d_src[right_head]))
+			if (d_src[left_head] <= d_src[right_head])
 			{
-				ctx->d_dest[write_head] = ctx->d_src[left_head];
+				d_dest[write_head] = d_src[left_head];
+				++write_head;
 				++left_head;
 			}
 			else
 			{
-				ctx->d_dest[write_head] = ctx->d_src[right_head];
+				d_dest[write_head] = d_src[right_head];
+				++write_head;
 				++right_head;
 			}
+		}
+
+		// Exhaust the left side if not exhausted already.
+		while (left_head < mid)
+		{
+			d_dest[write_head] = d_src[left_head];
+			++write_head;
+			++left_head;
+		}
+
+		// Do the same to the right side.
+		while (right_head < right)
+		{
+			d_dest[write_head] = d_src[right_head];
+			++write_head;
+			++right_head;
 		}
 	}
 }

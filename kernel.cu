@@ -5,6 +5,7 @@
 #include <array>
 #include <algorithm>
 #include <chrono>
+#include <iomanip>
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -24,10 +25,10 @@ struct merge_sort_ctx_t
 	uint32_t* tmp;
 	size_t elem_count;
 	size_t size_bytes;
-	size_t run_size;
-	size_t running_threads;
+	size_t elems_per_chunk;
+	size_t unmerged_chunks;
 	size_t threads_per_block;
-	size_t total_blocks;
+	size_t total_thread_blocks;
 };
 
 static int uint32_comp(const void* a, const void* b)
@@ -46,7 +47,7 @@ __device__ void print_array_device(uint32_t* arr, size_t size)
 	printf("\n");
 }
 
-void __host__ print_array_host(uint32_t* arr, size_t size)
+__host__ void print_array_host(uint32_t* arr, size_t size)
 {
 	for (size_t i = 0; i < size; ++i)
 	{
@@ -62,11 +63,10 @@ __global__ void device_merge(merge_sort_ctx_t* ctx)
 	uint32_t* d_src = ctx->d_src;
 	uint32_t* d_dest = ctx->d_dest;
 
-	if (ctx->running_threads > thread_id)
+	if (ctx->unmerged_chunks > thread_id)
 	{
-		size_t elems_per_thread = ctx->run_size * 2;
-		size_t left = thread_id * elems_per_thread;
-		size_t right = left + elems_per_thread;
+		size_t left = thread_id * ctx->elems_per_chunk;
+		size_t right = left + ctx->elems_per_chunk;
 
 		const size_t mid = left + ((right - left) / 2);
 		size_t left_head = left;
@@ -130,111 +130,6 @@ __host__ void host_merge(uint32_t* dest, const uint32_t* src, const size_t left,
 	}
 }
 
-__global__ void device_merge_optimized(merge_sort_ctx_t* ctx)
-{
-	extern __shared__ uint8_t shared[];
-
-	const int block_first_thread_id = blockIdx.x * blockDim.x;
-	const int thread_id = block_first_thread_id + threadIdx.x;
-
-	//	merge_sort_ctx_t* const shared_ctx = (merge_sort_ctx_t*)shared;
-	merge_sort_ctx_t* const shared_ctx = ctx;
-
-	if (threadIdx.x == 0)
-	{
-		memcpy(shared_ctx, ctx, sizeof(merge_sort_ctx_t));
-	}
-
-	__syncthreads();
-
-	const size_t shared_chunk_size = shared_ctx->run_size * 2 * shared_ctx->running_threads % blockDim.x;
-	const size_t shared_chunk_size_bytes = shared_chunk_size * sizeof(uint32_t);
-	const size_t chunk_begin_offset = block_first_thread_id * shared_chunk_size;
-
-	uint32_t* const global_src = &shared_ctx->d_src[chunk_begin_offset];
-	uint32_t* const global_dest = &shared_ctx->d_dest[chunk_begin_offset];
-
-	uint32_t* const shared_src1 = (uint32_t*)(((merge_sort_ctx_t*)shared) + 1);
-	uint32_t* const shared_dest1 = shared_src1 + shared_chunk_size;
-
-	uint32_t* const shared_src = global_src;
-	uint32_t* const shared_dest = global_dest;
-
-	if (threadIdx.x == 0)
-	{
-		/*
-		printf("%llu\n", sizeof(merge_sort_ctx_t));
-		printf("%llu %llu %llu %llu\n", &shared, shared_ctx, shared_src, shared_dest);
-		printf("shared_chunk_size = %llu\n", shared_chunk_size);
-		printf("shared_chunk_size_bytes = %llu\n", shared_chunk_size_bytes);
-		printf("chunk_begin_offset = %llu\n", chunk_begin_offset);
-		printf("d_src = %p, d_dest = %p, global_src = %p, global_dest = %p\n", ctx->d_src, ctx->d_dest, global_src, global_dest);
-		if (shared_ctx->d_src != global_src) printf("%p != %p\n", shared_ctx->d_src, global_src);
-		if (shared_ctx->d_dest != global_dest) printf("%p != %p\n", shared_ctx->d_dest, global_dest);
-		*/
-		memcpy(shared_src, global_src, shared_chunk_size_bytes);
-		memcpy(shared_dest, global_dest, shared_chunk_size_bytes);
-	}
-
-	__syncthreads();
-
-	if (thread_id < shared_ctx->running_threads)
-	{
-		size_t left = thread_id * (shared_ctx->run_size * 2);
-		/*
-		size_t right = left + (shared_ctx->run_size * 2);
-		const size_t mid = left + ((right - left) / 2);
-		size_t left_head = left;
-		size_t right_head = mid;
-		size_t write_head = left;
-		*/
-
-		const size_t rel_left = left - (block_first_thread_id * shared_ctx->run_size * 2);
-		const size_t rel_right = rel_left + (shared_ctx->run_size * 2);
-		const size_t rel_mid = rel_left + ((rel_right - rel_left) / 2);
-		size_t rel_left_head = rel_left;
-		size_t rel_right_head = rel_mid;
-		size_t rel_write_head = rel_left;
-
-		for (; rel_write_head < rel_right; ++rel_write_head)
-		{
-			if (rel_left_head < rel_mid && (rel_right_head >= rel_right || shared_src[rel_left_head] <= shared_src[rel_right_head]))
-			{
-				shared_dest[rel_write_head] = shared_src[rel_left_head];
-				++rel_left_head;
-			}
-			else
-			{
-				shared_dest[rel_write_head] = shared_src[rel_right_head];
-				++rel_right_head;
-			}
-		}
-
-		if (threadIdx.x == 0)
-		{
-			memcpy(&shared_ctx->d_dest[chunk_begin_offset], shared_dest, shared_chunk_size_bytes);
-		}
-
-		__syncthreads();
-
-		/*
-		for (; write_head < right; ++write_head)
-		{
-			if (left_head < mid && (shared_ctx->d_src[left_head] < shared_ctx->d_src[right_head] || right_head >= right))
-			{
-				shared_ctx->d_dest[write_head] = shared_ctx->d_src[left_head];
-				++left_head;
-			}
-			else
-			{
-				shared_ctx->d_dest[write_head] = shared_ctx->d_src[right_head];
-				++right_head;
-			}
-		}
-		*/
-	}
-}
-
 int main()
 {
 	std::chrono::steady_clock::time_point begin;
@@ -243,22 +138,27 @@ int main()
 	//const uint32_t N_ELEMENTS = 64;
 	//const uint32_t N_ELEMENTS = 1048576;
 	//const uint32_t N_ELEMENTS = 2097152;
-    //const uint32_t N_ELEMENTS = 4194304;
+	//const uint32_t N_ELEMENTS = 4194304;
 	const uint32_t N_ELEMENTS = 268435456;
 	//const uint32_t MAX_THREADS_PER_BLOCK = 16;
 	const uint32_t MAX_THREADS_PER_BLOCK = 8; // Experimental
 	const size_t HOST_MAX_NATIVE_THREADS = 8;
+
+	cout << "Sorting an array of "
+		<< N_ELEMENTS
+		<< " randomized 32-bit integers in random order"
+		<< endl;
 
 	// Initial context on the host.
 	merge_sort_ctx_t* d_ctx;
 	cudaMallocManaged(&d_ctx, sizeof(merge_sort_ctx_t));
 	d_ctx->elem_count = N_ELEMENTS;
 	d_ctx->size_bytes = d_ctx->elem_count * sizeof(uint32_t);
-	d_ctx->running_threads = d_ctx->elem_count / 2;
-	d_ctx->run_size = 1;
+	d_ctx->unmerged_chunks = d_ctx->elem_count / 2;
+	d_ctx->elems_per_chunk = 2;
 	d_ctx->threads_per_block = MAX_THREADS_PER_BLOCK;
-	d_ctx->total_blocks = d_ctx->running_threads / d_ctx->threads_per_block;
-	if (d_ctx->running_threads % d_ctx->threads_per_block != 0) ++d_ctx->total_blocks;
+	d_ctx->total_thread_blocks = d_ctx->unmerged_chunks / d_ctx->threads_per_block;
+	if (d_ctx->unmerged_chunks % d_ctx->threads_per_block != 0) ++d_ctx->total_thread_blocks;
 	// Allocate buffers in GPU memory.
 	cudaMalloc(&d_ctx->d_src, d_ctx->size_bytes);
 	cudaMalloc(&d_ctx->d_dest, d_ctx->size_bytes);
@@ -267,7 +167,8 @@ int main()
 	uint32_t* h_src = new uint32_t[d_ctx->size_bytes];
 	for (size_t i = 0; i < d_ctx->elem_count; ++i)
 	{
-		h_src[i] = d_ctx->elem_count - 1 - i;
+		h_src[i] = (uint32_t)rand();
+		//h_src[i] = d_ctx->elem_count - 1 - i;
 		assert(h_src[i] == d_ctx->elem_count - 1 - i);
 	}
 	assert(h_src[0] == d_ctx->elem_count - 1);
@@ -281,24 +182,28 @@ int main()
 	uint32_t* h_tmpsrc = new uint32_t[d_ctx->size_bytes];
 	memset(h_tmpsrc, 0, d_ctx->size_bytes);
 
+	/////////////////////////////////////////////////////////////////////////////
+	// CUDA_SORT
+	/////////////////////////////////////////////////////////////////////////////
+
 	begin = std::chrono::steady_clock::now();
 
-	// Copy the array to be sorted into the GPU buffer.
+	// Copy the array to be sorted into GPU memory.
 	cudaMemcpy(d_ctx->d_src, h_src, d_ctx->size_bytes, cudaMemcpyHostToDevice);
 
-	while (d_ctx->running_threads >= HOST_MAX_NATIVE_THREADS * 32 /* Found this value to be good */)
+	while (d_ctx->unmerged_chunks >= HOST_MAX_NATIVE_THREADS * 32 /* Found this value to be good */)
 	{
 		// Figure out the total number of thread blocks needed for the computation.
-		d_ctx->total_blocks = d_ctx->running_threads / d_ctx->threads_per_block;
-		if (d_ctx->running_threads % d_ctx->threads_per_block != 0) ++d_ctx->total_blocks;
+		d_ctx->total_thread_blocks = d_ctx->unmerged_chunks / d_ctx->threads_per_block;
+		if (d_ctx->unmerged_chunks % d_ctx->threads_per_block != 0) ++d_ctx->total_thread_blocks;
 
 		// Do a merge run.
-		device_merge<< <d_ctx->total_blocks, d_ctx->threads_per_block>> > (d_ctx);
+		device_merge<< <d_ctx->total_thread_blocks, d_ctx->threads_per_block>> > (d_ctx);
 		cudaDeviceSynchronize();
 		
-		// Update the sort status.
-		d_ctx->run_size *= 2;
-		d_ctx->running_threads /= 2;
+		// Update the status of the sort.
+		d_ctx->elems_per_chunk *= 2;
+		d_ctx->unmerged_chunks /= 2;
 
 		swap(d_ctx->d_src, d_ctx->d_dest);
 	}
@@ -306,8 +211,7 @@ int main()
 	// Unswap.
 	swap(d_ctx->d_src, d_ctx->d_dest);
 
-	end = std::chrono::steady_clock::now();
-	cout << chrono::duration_cast<chrono::milliseconds>(end - begin).count() << " ms" << endl;
+	auto gpu_end = std::chrono::steady_clock::now();
 
 	// Copy the GPU results into host memory.
 	cudaMemcpy(h_tmpsrc, d_ctx->d_dest, d_ctx->size_bytes, cudaMemcpyDeviceToHost);
@@ -319,11 +223,11 @@ int main()
 	vector<thread*> threads;
 
 	// Do the last runs on the CPU.
-	while (h_ctx.running_threads != 0)
+	while (h_ctx.unmerged_chunks != 0)
 	{
-		const size_t elems_per_thread = h_ctx.elem_count / h_ctx.running_threads;
-		const size_t threads_per_batch = std::min(h_ctx.running_threads, HOST_MAX_NATIVE_THREADS);
-		const size_t thread_batches = std::max((size_t)1ULL, h_ctx.running_threads / threads_per_batch);
+		const size_t elems_per_thread = h_ctx.elem_count / h_ctx.unmerged_chunks;
+		const size_t threads_per_batch = std::min(h_ctx.unmerged_chunks, HOST_MAX_NATIVE_THREADS);
+		const size_t thread_batches = std::max((size_t)1ULL, h_ctx.unmerged_chunks / threads_per_batch);
 
 		for (size_t j = 0; j < thread_batches; ++j)
 		{
@@ -341,8 +245,8 @@ int main()
 			threads.clear();
 		}
 
-		h_ctx.run_size *= 2;
-		h_ctx.running_threads /= 2;
+		h_ctx.elems_per_chunk *= 2;
+		h_ctx.unmerged_chunks /= 2;
 
 		swap(h_tmpsrc, h_dest);
 	}
@@ -350,16 +254,20 @@ int main()
 	// Unswap.
 	swap(h_tmpsrc, h_dest);
 
-	end = std::chrono::steady_clock::now();
+	auto cpu_end = std::chrono::steady_clock::now();
 
-	cout << "Sorted "
-		<< h_ctx.elem_count
-		<< " 32-bit integers in"
-		<< endl;
-
-	cout << "- "
-		<< std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
-		<< " ms using cuda_sort"
+	cout << setw(11)
+		<< right
+		<< "- cuda_sort"
+		<< setw(6)
+		<< right
+		<< std::chrono::duration_cast<std::chrono::milliseconds>(cpu_end - begin).count()
+		<< " ms"
+		<< " (GPU: "
+		<< std::chrono::duration_cast<std::chrono::milliseconds>(gpu_end - begin).count()
+		<< " ms, CPU: "
+		<< std::chrono::duration_cast<std::chrono::milliseconds>(cpu_end - gpu_end).count()
+		<< " ms)"
 		<< endl;
 
 	for (size_t i = 0; i < h_ctx.elem_count; ++i)
@@ -373,7 +281,11 @@ int main()
 		}
 	}
 
+
+	/////////////////////////////////////////////////////////////////////////////
 	// QSORT
+	/////////////////////////////////////////////////////////////////////////////
+
 
 	uint32_t* src2 = new uint32_t[h_ctx.size_bytes];
 	memcpy(src2, h_src, h_ctx.size_bytes);
@@ -381,13 +293,21 @@ int main()
 	begin = std::chrono::steady_clock::now();
 	qsort(src2, h_ctx.elem_count, sizeof(uint32_t), uint32_comp);
 	end = std::chrono::steady_clock::now();
-	cout << "- "
+	cout << setw(11)
+		<< right
+		<< "- qsort    "
+		<< setw(6)
+		<< right
 		<< std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
-		<< " ms using qsort"
+		<< " ms"
 		<< endl;
 	delete[] src2;
 
+
+	/////////////////////////////////////////////////////////////////////////////
 	// STD::SORT
+	/////////////////////////////////////////////////////////////////////////////
+
 
 	std::vector<uint32_t> src3;
 	for (size_t i = 0; i < h_ctx.elem_count; ++i)
@@ -397,9 +317,13 @@ int main()
 	begin = std::chrono::steady_clock::now();
 	std::sort(src3.begin(), src3.end());
 	end = std::chrono::steady_clock::now();
-	cout << "- "
+	cout << setw(11)
+		<< right
+		<< "- std::sort"
+		<< setw(6)
+		<< right
 		<< std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
-		<< " ms using std::sort"
+		<< " ms"
 		<< endl;
 
 	cudaFree(d_ctx->d_src);

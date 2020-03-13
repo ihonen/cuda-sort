@@ -124,16 +124,16 @@ __global__ void device_merge(merge_sort_ctx_t* ctx)
 
 	if (ctx->running_threads > thread_id)
 	{
-		register size_t left = thread_id * (ctx->run_size * 2);
-		register size_t right = left + (ctx->run_size * 2);
-		const register size_t mid = left + ((right - left) / 2);
-		register size_t left_head = left;
-		register size_t right_head = mid;
-		register size_t write_head = left;
+		size_t left = thread_id * (ctx->run_size * 2);
+		size_t right = left + (ctx->run_size * 2);
+		const size_t mid = left + ((right - left) / 2);
+		size_t left_head = left;
+		size_t right_head = mid;
+		size_t write_head = left;
 
 		for (; write_head < right; ++write_head)
 		{
-			if (left_head < mid && (ctx->d_src[left_head] < ctx->d_src[right_head] || right_head >= right))
+			if (left_head < mid && (right_head >= right || ctx->d_src[left_head] <= ctx->d_src[right_head]))
 			{
 				ctx->d_dest[write_head] = ctx->d_src[left_head];
 				++left_head;
@@ -156,7 +156,7 @@ __host__ void host_merge(uint32_t* dest, const uint32_t* src, const size_t left,
 
 	for (; write_head < right; ++write_head)
 	{
-		if (left_head < mid && (src[left_head] < src[right_head] || right_head >= right))
+		if (left_head < mid && (right_head >= right || src[left_head] <= src[right_head]))
 		{
 			dest[write_head] = src[left_head];
 			++left_head;
@@ -167,6 +167,7 @@ __host__ void host_merge(uint32_t* dest, const uint32_t* src, const size_t left,
 			++right_head;
 		}
 	}
+
 }
 
 __global__ void device_merge_optimized(merge_sort_ctx_t* ctx)
@@ -237,7 +238,7 @@ __global__ void device_merge_optimized(merge_sort_ctx_t* ctx)
 
 		for (; rel_write_head < rel_right; ++rel_write_head)
 		{
-			if (rel_left_head < rel_mid && (shared_src[rel_left_head] < shared_src[rel_right_head] || rel_right_head >= rel_right))
+			if (rel_left_head < rel_mid && (rel_right_head >= rel_right || shared_src[rel_left_head] <= shared_src[rel_right_head]))
 			{
 				shared_dest[rel_write_head] = shared_src[rel_left_head];
 				++rel_left_head;
@@ -282,9 +283,10 @@ int main()
 	//const uint32_t N_ELEMENTS = 64;
 	//const uint32_t N_ELEMENTS = 1048576;
 	//const uint32_t N_ELEMENTS = 2097152;
-	//const uint32_t N_ELEMENTS = 4194304;
+    //const uint32_t N_ELEMENTS = 4194304;
 	const uint32_t N_ELEMENTS = 268435456;
-	const uint32_t MAX_THREADS_PER_BLOCK = 1024;
+	//const uint32_t MAX_THREADS_PER_BLOCK = 16;
+	const uint32_t MAX_THREADS_PER_BLOCK = 16;
 	const size_t HOST_MAX_NATIVE_THREADS = 8;
 
 	// Initial context on the host.
@@ -324,7 +326,7 @@ int main()
 
 	begin = std::chrono::steady_clock::now();
 
-	while (d_ctx->running_threads >= HOST_MAX_NATIVE_THREADS * 4 * 2 * 2 * 2)
+	while (d_ctx->running_threads >= HOST_MAX_NATIVE_THREADS * 4 * 2 * 2)
 	{
 		// Figure out the total number of thread blocks needed for the computation.
 		d_ctx->total_blocks = d_ctx->running_threads / d_ctx->threads_per_block;
@@ -333,39 +335,39 @@ int main()
 		// Do a merge run.
 		auto tmp = std::chrono::steady_clock::now();
 
-		device_merge << <d_ctx->total_blocks, d_ctx->threads_per_block >> > (d_ctx);
+		//device_merge_optimized << <d_ctx->total_blocks, d_ctx->threads_per_block, sizeof(merge_sort_ctx_t) >> > (d_ctx);
+		device_merge<< <d_ctx->total_blocks, d_ctx->threads_per_block >> > (d_ctx);
 		cudaDeviceSynchronize();
-
-		// Copy the temporary results into the source buffer.
-		cudaMemcpy(d_ctx->d_src, d_ctx->d_dest, d_ctx->size_bytes, cudaMemcpyDeviceToDevice);
-
-		auto tmp2 = std::chrono::steady_clock::now();
-
+		
 		// Update the sort status.
 		d_ctx->run_size *= 2;
 		d_ctx->running_threads /= 2;
+
+		swap(d_ctx->d_src, d_ctx->d_dest);
 	}
 
+	// Unswap.
+	swap(d_ctx->d_src, d_ctx->d_dest);
+
 	end = std::chrono::steady_clock::now();
-	std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count() << " ms" << std::endl;
+	cout << chrono::duration_cast<chrono::milliseconds>(end - begin).count() << " ms" << endl;
 
 	// Copy the GPU results into host memory.
-	cudaMemcpy(h_tmp, d_ctx->d_src, d_ctx->size_bytes, cudaMemcpyDeviceToHost);
-	cudaMemcpy(h_dest, d_ctx->d_dest, d_ctx->size_bytes, cudaMemcpyDeviceToHost);
+	cudaMemcpy(h_tmp, d_ctx->d_dest, d_ctx->size_bytes, cudaMemcpyDeviceToHost);
 
 	// Copy the context into host memory (for better performance).
-	merge_sort_ctx_t* h_ctx = new merge_sort_ctx_t;
-	cudaMemcpy(h_ctx, d_ctx, sizeof(merge_sort_ctx_t), cudaMemcpyDeviceToHost);
+	merge_sort_ctx_t h_ctx;
+	cudaMemcpy(&h_ctx, d_ctx, sizeof(merge_sort_ctx_t), cudaMemcpyDeviceToHost);
+
+	vector<thread*> threads;
 
 	// Do the last runs on the CPU.
-	while (h_ctx->running_threads != 0)
+	while (h_ctx.running_threads != 0)
 	{
-		vector<thread*> threads;
-
-		for (size_t i = 0; i < h_ctx->running_threads; ++i)
+		for (size_t i = 0; i < h_ctx.running_threads; ++i)
 		{
-			size_t left = i * h_ctx->run_size * 2;
-			size_t right = left + h_ctx->run_size * 2;
+			size_t left = i * h_ctx.run_size * 2;
+			size_t right = left + h_ctx.run_size * 2;
 			threads.push_back(new thread(host_merge, h_dest, h_tmp, left, right));
 		}
 
@@ -374,57 +376,47 @@ int main()
 			thread->join();
 			delete thread;
 		}
+		threads.clear();
 
-		memcpy(h_tmp, h_dest, h_ctx->size_bytes);
+		h_ctx.run_size *= 2;
+		h_ctx.running_threads /= 2;
 
-		h_ctx->run_size *= 2;
-		h_ctx->running_threads /= 2;
+		swap(h_tmp, h_dest);
 	}
 
-	memcpy(h_dest, h_tmp, h_ctx->size_bytes);
+	// Unswap.
+	swap(h_tmp, h_dest);
 
 	end = std::chrono::steady_clock::now();
 
-	/*
-	for (size_t i = 0; i < 32; ++i)
-	{
-		printf("%*i", 10, h_dest[i]);
-	}
-	printf("\n");
+	cout << "Sorted "
+		<< h_ctx.elem_count
+		<< " 32-bit integers in"
+		<< endl;
 
-	for (size_t i = h_ctx->elem_count - 1 - 32; i < h_ctx->elem_count; ++i)
-	{
-		printf("%*i", 10, h_dest[i]);
-	}
-	printf("\n");
-	*/
+	cout << "- "
+		<< std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
+		<< " ms using cuda_sort"
+		<< endl;
 
-	for (size_t i = 0; i < h_ctx->elem_count; ++i)
+	for (size_t i = 0; i < h_ctx.elem_count; ++i)
 	{
-		if (h_dest[i] != i)
+		if (i == 0) continue;
+
+		if (h_dest[i] < h_dest[i - 1])
 		{
 			cout << "ERROR IN OUTPUT (first erroneous index = " << i << ", value = " << h_dest[i] << ")!" << endl;
 			break;
 		}
 	}
 
-	cout << "Sorted "
-		<< h_ctx->elem_count
-		<< " 32-bit integers in"
-		<< endl;
-
-	cout << "- "
-		<< std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
-		<< " ms using CUDA"
-		<< endl;
-
 	// QSORT
 
-	uint32_t* src2 = new uint32_t[h_ctx->size_bytes];
-	memcpy(src2, h_src, h_ctx->size_bytes);
+	uint32_t* src2 = new uint32_t[h_ctx.size_bytes];
+	memcpy(src2, h_src, h_ctx.size_bytes);
 
 	begin = std::chrono::steady_clock::now();
-	qsort(src2, h_ctx->elem_count, sizeof(uint32_t), uint32_comp);
+	qsort(src2, h_ctx.elem_count, sizeof(uint32_t), uint32_comp);
 	end = std::chrono::steady_clock::now();
 	cout << "- "
 		<< std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
@@ -435,9 +427,9 @@ int main()
 	// STD::SORT
 
 	std::vector<uint32_t> src3;
-	for (size_t i = 0; i < h_ctx->elem_count; ++i)
+	for (size_t i = 0; i < h_ctx.elem_count; ++i)
 		src3.push_back(0);
-	memcpy(src3.data(), h_src, h_ctx->size_bytes);
+	memcpy(src3.data(), h_src, h_ctx.size_bytes);
 
 	begin = std::chrono::steady_clock::now();
 	std::sort(src3.begin(), src3.end());
@@ -452,9 +444,7 @@ int main()
 	cudaFree(d_ctx);
 	delete[] h_src;
 	delete[] h_dest;
-	delete[] h_ctx;
-
-	cudaDeviceReset();
+//	delete[] h_ctx;
 
 	return 0;
 }

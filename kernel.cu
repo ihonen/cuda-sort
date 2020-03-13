@@ -140,35 +140,75 @@ void check_gpu_err()
 	}
 }
 
-int main() try
+struct config_t
+{
+	size_t max_cpu_threads;
+	size_t block_size;
+	size_t array_len;
+};
+
+bool default_arg(const char* arg)
+{
+	return strcmp(arg, "d") == 0;
+}
+
+int main(int argc, char* argv[]) try
 {
 	std::chrono::steady_clock::time_point begin;
 	std::chrono::steady_clock::time_point end;
+
+	config_t cfg;
+
+	if (argc < 4)
+	{
+		cerr << "Invalid arguments" << endl;
+		cerr << "Usage: cuda_sort.exe <number of CPU threads> <GPU thread block size> <array size as power of two>" << endl;
+		cerr << "'d' = use default value" << endl;
+		return -1;
+	}
+	else
+	{
+		if (default_arg(argv[1])) cfg.max_cpu_threads = 8;
+		else cfg.max_cpu_threads = stoi(argv[1]);
+
+		if (default_arg(argv[2])) cfg.block_size = 8;
+		else cfg.block_size = stoi(argv[2]);
+
+		if (default_arg(argv[3])) cfg.array_len = (size_t)pow(2, 24);
+		else cfg.array_len = (size_t)pow(2, stoi(argv[3]));
+	}
 
 	//const uint32_t N_ELEMENTS = 64;
 	//const uint32_t N_ELEMENTS = 1048576;
 	//const uint32_t N_ELEMENTS = 2097152;
 	//const uint32_t N_ELEMENTS = 4194304;
-	const uint32_t N_ELEMENTS = 268435456;
+	//const uint32_t N_ELEMENTS = 268435456;
 	//const uint32_t MAX_THREADS_PER_BLOCK = 16;
-	const uint32_t MAX_THREADS_PER_BLOCK = 8; // Experimental
-	const size_t HOST_MAX_NATIVE_THREADS = 8;
+	//const uint32_t MAX_THREADS_PER_BLOCK = 8; // Experimental
 
+	cout << endl;
+	cout << "Max CPU threads: " << cfg.max_cpu_threads << endl;
+	cout << "GPU thread block size: " << cfg.block_size << endl;
+	cout << "Array length: " << cfg.array_len << endl;
+	cout << endl;
+	
+	/*
 	cout << "Sorting an array of "
-		<< N_ELEMENTS
+		<< cfg.array_len
 		<< " 32-bit random integers"
 		<< endl;
+	*/
 
 	// Initial context on the host.
 	merge_sort_ctx_t* d_ctx;
 	cudaMallocManaged(&d_ctx, sizeof(merge_sort_ctx_t));
 	check_gpu_err();
 
-	d_ctx->elem_count = N_ELEMENTS;
+	d_ctx->elem_count = cfg.array_len;
 	d_ctx->size_bytes = d_ctx->elem_count * sizeof(uint32_t);
 	d_ctx->unmerged_chunks = d_ctx->elem_count / 2;
 	d_ctx->elems_per_chunk = 2;
-	d_ctx->threads_per_block = MAX_THREADS_PER_BLOCK;
+	d_ctx->threads_per_block = cfg.block_size;
 	d_ctx->total_thread_blocks = d_ctx->unmerged_chunks / d_ctx->threads_per_block;
 	if (d_ctx->unmerged_chunks % d_ctx->threads_per_block != 0) ++d_ctx->total_thread_blocks;
 	// Allocate buffers in GPU memory.
@@ -202,7 +242,7 @@ int main() try
 	cudaMemcpy(d_ctx->d_src, h_src, d_ctx->size_bytes, cudaMemcpyHostToDevice);
 	check_gpu_err();
 
-	while (d_ctx->unmerged_chunks >= HOST_MAX_NATIVE_THREADS * 32 /* Found this value to be good */)
+	while (d_ctx->unmerged_chunks >= cfg.max_cpu_threads * 32 /* Found this value to be good */)
 	{
 		// Figure out the total number of thread blocks needed for the computation.
 		d_ctx->total_thread_blocks = d_ctx->unmerged_chunks / d_ctx->threads_per_block;
@@ -241,7 +281,7 @@ int main() try
 	while (h_ctx.unmerged_chunks != 0)
 	{
 		const size_t elems_per_thread = h_ctx.elem_count / h_ctx.unmerged_chunks;
-		const size_t threads_per_batch = std::min(h_ctx.unmerged_chunks, HOST_MAX_NATIVE_THREADS);
+		const size_t threads_per_batch = std::min(h_ctx.unmerged_chunks, cfg.max_cpu_threads);
 		const size_t thread_batches = std::max((size_t)1ULL, h_ctx.unmerged_chunks / threads_per_batch);
 
 		for (size_t j = 0; j < thread_batches; ++j)
@@ -272,17 +312,30 @@ int main() try
 	auto cpu_end = std::chrono::steady_clock::now();
 
 	cout << setw(11)
-		<< right
-		<< "- cuda_sort"
+		<< left
+		<< "cuda_sort"
 		<< setw(6)
 		<< right
 		<< std::chrono::duration_cast<std::chrono::milliseconds>(cpu_end - begin).count()
 		<< " ms"
-		<< " (GPU: "
+		<< endl;
+
+	cout << setw(11)
+		<< left
+		<< "  GPU"
+		<< setw(6)
+		<< right
 		<< std::chrono::duration_cast<std::chrono::milliseconds>(gpu_end - begin).count()
-		<< " ms, CPU: "
+		<< " ms"
+		<< endl;
+	
+	cout << setw(11)
+		<< left
+		<< "  CPU"
+		<< setw(6)
+		<< right
 		<< std::chrono::duration_cast<std::chrono::milliseconds>(cpu_end - gpu_end).count()
-		<< " ms)"
+		<< " ms"
 		<< endl;
 
 	for (size_t i = 0; i < h_ctx.elem_count; ++i)
@@ -311,8 +364,8 @@ int main() try
 	qsort(src2, h_ctx.elem_count, sizeof(uint32_t), uint32_comp);
 	end = std::chrono::steady_clock::now();
 	cout << setw(11)
-		<< right
-		<< "- qsort    "
+		<< left
+		<< "qsort    "
 		<< setw(6)
 		<< right
 		<< std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
@@ -335,8 +388,8 @@ int main() try
 	std::sort(src3.begin(), src3.end());
 	end = std::chrono::steady_clock::now();
 	cout << setw(11)
-		<< right
-		<< "- std::sort"
+		<< left
+		<< "std::sort"
 		<< setw(6)
 		<< right
 		<< std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
@@ -352,10 +405,12 @@ int main() try
 	delete[] h_src;
 	delete[] h_dest;
 
+	/*
 	cout << endl;
 	cout << "Press Enter to exit..." << endl;
 	std::string s;
 	std::getline(cin, s);
+	*/
 
 	return 0;
 }

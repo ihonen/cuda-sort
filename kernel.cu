@@ -185,6 +185,8 @@ bool default_arg(const char* arg)
 template<typename T>
 T* cuda_sort(T* h_dest, T* h_src, merge_sort_cfg_t cfg)
 {
+	printf("%p\n", h_dest);
+
 	// Initial context on the host.
 	merge_sort_ctx_t<T>* d_ctx;
 	cudaMallocManaged(&d_ctx, sizeof(merge_sort_ctx_t<T>));
@@ -204,7 +206,9 @@ T* cuda_sort(T* h_dest, T* h_src, merge_sort_cfg_t cfg)
 	check_gpu_err();
 
 	// Temporary results buffer.
-	T* h_tmpsrc = new T[d_ctx->size_bytes];
+	T* h_tmp = new T[d_ctx->size_bytes];
+
+	printf("%p\n", h_tmp);
 
 	// Copy the array to be sorted into GPU memory.
 	cudaMemcpy(d_ctx->d_src, h_src, d_ctx->size_bytes, cudaMemcpyHostToDevice);
@@ -233,7 +237,7 @@ T* cuda_sort(T* h_dest, T* h_src, merge_sort_cfg_t cfg)
 	swap(d_ctx->d_src, d_ctx->d_dest);
 
 	// Copy the GPU results into host memory.
-	cudaMemcpy(h_tmpsrc, d_ctx->d_dest, d_ctx->size_bytes, cudaMemcpyDeviceToHost);
+	cudaMemcpy(h_tmp, d_ctx->d_dest, d_ctx->size_bytes, cudaMemcpyDeviceToHost);
 	check_gpu_err();
 
 	// Copy the context into host memory (for better performance).
@@ -242,6 +246,10 @@ T* cuda_sort(T* h_dest, T* h_src, merge_sort_cfg_t cfg)
 	check_gpu_err();
 
 	vector<thread*> threads;
+
+	// These can be safely swapped.
+	T* work_src = h_tmp;
+	T * work_dest = h_dest;
 
 	// Do the last runs on the CPU.
 	while (h_ctx.unmerged_chunks != 0)
@@ -256,7 +264,7 @@ T* cuda_sort(T* h_dest, T* h_src, merge_sort_cfg_t cfg)
 			{
 				size_t left = (j * elems_per_thread * threads_per_batch) + (i * elems_per_thread);
 				size_t right = left + elems_per_thread;
-				threads.push_back(new thread(host_merge<T>, h_dest, h_tmpsrc, left, right));
+				threads.push_back(new thread(host_merge<T>, work_dest, work_src, left, right));
 			}
 			for (const auto& thread : threads)
 			{
@@ -269,11 +277,12 @@ T* cuda_sort(T* h_dest, T* h_src, merge_sort_cfg_t cfg)
 		h_ctx.elems_per_chunk *= 2;
 		h_ctx.unmerged_chunks /= 2;
 
-		swap(h_tmpsrc, h_dest);
+		swap(work_src, work_dest);
 	}
 
-	// Unswap.
-	swap(h_tmpsrc, h_dest);
+	// Unswap if necessary.
+	swap(work_src, work_dest);
+	if (h_dest != work_dest) memcpy(h_dest, work_dest, h_ctx.size_bytes);
 
 	for (size_t i = 0; i < h_ctx.elem_count; ++i)
 	{
@@ -293,6 +302,11 @@ T* cuda_sort(T* h_dest, T* h_src, merge_sort_cfg_t cfg)
 	cudaFree(d_ctx);
 	check_gpu_err();
 
+	delete[] h_tmp;
+
+	printf("%p\n", h_dest);
+	printf("%p\n", h_tmp);
+
 	return h_dest;
 }
 
@@ -302,13 +316,15 @@ void run_benchmark(merge_sort_cfg_t cfg)
 	srand(time(nullptr));
 
 	// Source buffer.
-	T* cuda_src = new T[cfg.array_len];
+	T* orig_src = new T[cfg.array_len];
 	for (size_t i = 0; i < cfg.array_len; ++i)
-		cuda_src[i] = (T)rand();
+		orig_src[i] = (T)rand();
+
+	T* cuda_src = new T[cfg.array_len];
+	memcpy(cuda_src, orig_src, sizeof(T) * cfg.array_len);
 
 	// Destination buffer.
 	T* cuda_dest = new T[cfg.array_len];
-	memset(cuda_dest, 0, cfg.array_len * sizeof(T));
 
 	std::chrono::steady_clock::time_point begin;
 	std::chrono::steady_clock::time_point end;
@@ -333,11 +349,9 @@ void run_benchmark(merge_sort_cfg_t cfg)
 	// qsort
 
 	overwrite_dcache();
-
-	memset(cuda_dest, 0, sizeof(T) * cfg.array_len);
 	
 	T* qsort_src = new T[cfg.array_len];
-	memcpy(qsort_src, cuda_src, sizeof(T) * cfg.array_len);
+	memcpy(qsort_src, orig_src, sizeof(T) * cfg.array_len);
 
 	begin = std::chrono::steady_clock::now();
 	qsort(qsort_src, cfg.array_len, sizeof(T), int_comp<T>);
@@ -358,7 +372,7 @@ void run_benchmark(merge_sort_cfg_t cfg)
 	std::vector<T> stdsort_src;
 	for (size_t i = 0; i < cfg.array_len; ++i)
 		stdsort_src.push_back(0);
-	memcpy(stdsort_src.data(), cuda_src, sizeof(T) * cfg.array_len);
+	memcpy(stdsort_src.data(), orig_src, sizeof(T) * cfg.array_len);
 
 	begin = std::chrono::steady_clock::now();
 	std::sort(stdsort_src.begin(), stdsort_src.end());
@@ -372,8 +386,10 @@ void run_benchmark(merge_sort_cfg_t cfg)
 		<< " ms"
 		<< endl;
 
+	delete[] orig_src;
 	delete[] cuda_src;
 	delete[] cuda_dest;
+	delete[] qsort_src;
 }
 
 int main(int argc, char* argv[]) try

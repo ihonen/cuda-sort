@@ -77,6 +77,22 @@ __forceinline static inline int int_comp(const void* a, const void* b)
 	else return 1;
 }
 
+// Convenience wrapper for cudaGetLastError.
+void check_gpu_err()
+{
+	auto err = cudaGetLastError();
+	if (err != cudaSuccess)
+	{
+		cerr << cudaGetErrorName(err) << ": " << cudaGetErrorString(err) << endl;
+	}
+}
+
+// If a command line argument is "d", the default value is used. Check if so.
+bool default_arg(const char* arg)
+{
+	return strcmp(arg, "d") == 0;
+}
+
 // Debug function that prints an array in GPU code.
 template<typename T>
 __device__ void print_array_device(T* arr, size_t size)
@@ -185,22 +201,6 @@ __host__ void host_merge(T* dest, const T* src, const size_t left, const size_t 
 	}
 }
 
-// Convenience wrapper for cudaGetLastError.
-void check_gpu_err()
-{
-	auto err = cudaGetLastError();
-	if (err != cudaSuccess)
-	{
-		cerr << cudaGetErrorName(err) << ": " << cudaGetErrorString(err) << endl;
-	}
-}
-
-// If a command line argument is "d", the default value is used. Check if so.
-bool default_arg(const char* arg)
-{
-	return strcmp(arg, "d") == 0;
-}
-
 // Sorts the array in src.
 // The run configuration is provided in cfg.
 // Returns a pointer to src.
@@ -271,7 +271,7 @@ T* cuda_sort(T* h_src, merge_sort_cfg_t cfg)
 
 	// These can be safely swapped.
 	T* work_src = h_tmp;
-	T * work_dest = h_src;
+	T* work_dest = h_src;
 
 	// Do the last merge runs on the CPU.
 	while (h_ctx.unmerged_chunks != 0)
@@ -350,72 +350,77 @@ void run_benchmark(merge_sort_cfg_t cfg)
 	for (size_t i = 0; i < cfg.array_len; ++i)
 		orig_src[i] = (T)rand();
 
-	T* cuda_src = new T[cfg.array_len];
-	memcpy(cuda_src, orig_src, sizeof(T) * cfg.array_len);
-
-	std::chrono::steady_clock::time_point begin;
-	std::chrono::steady_clock::time_point end;
+	chrono::steady_clock::time_point cuda_begin;
+	chrono::steady_clock::time_point cuda_end;
+	chrono::steady_clock::time_point qsort_begin;
+	chrono::steady_clock::time_point qsort_end;
+	chrono::steady_clock::time_point stdsort_begin;
+	chrono::steady_clock::time_point stdsort_end;
 
 	// cuda_sort
 
+	T* cuda_src = new T[cfg.array_len];
+	memcpy(cuda_src, orig_src, sizeof(T) * cfg.array_len);
+
 	overwrite_dcache();
 
-	begin = std::chrono::steady_clock::now();
+	cuda_begin = chrono::steady_clock::now();
 	cuda_sort<T>(cuda_src, cfg);
-	end = std::chrono::steady_clock::now();
+	cuda_end = chrono::steady_clock::now();
 
-	cout << setw(11)
-		<< left
-		<< "cuda_sort"
-		<< setw(6)
-		<< right
-		<< std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
-		<< " ms"
-		<< endl;
+	delete[] cuda_src;
 
 	// qsort
-
-	overwrite_dcache();
 	
 	T* qsort_src = new T[cfg.array_len];
 	memcpy(qsort_src, orig_src, sizeof(T) * cfg.array_len);
+	
+	overwrite_dcache();
 
-	begin = std::chrono::steady_clock::now();
+	qsort_begin = chrono::steady_clock::now();
 	qsort(qsort_src, cfg.array_len, sizeof(T), int_comp<T>);
-	end = std::chrono::steady_clock::now();
-	cout << setw(11)
-		<< left
-		<< "qsort    "
-		<< setw(6)
-		<< right
-		<< std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
-		<< " ms"
-		<< endl;
+	qsort_end = chrono::steady_clock::now();
+
+	delete[] qsort_src;
 
 	// std::sort
-
-	overwrite_dcache();
 
 	std::vector<T> stdsort_src;
 	for (size_t i = 0; i < cfg.array_len; ++i)
 		stdsort_src.push_back(0);
 	memcpy(stdsort_src.data(), orig_src, sizeof(T) * cfg.array_len);
 
-	begin = std::chrono::steady_clock::now();
+	overwrite_dcache();
+	
+	stdsort_begin = chrono::steady_clock::now();
 	std::sort(stdsort_src.begin(), stdsort_src.end());
-	end = std::chrono::steady_clock::now();
-	cout << setw(11)
-		<< left
-		<< "std::sort"
-		<< setw(6)
-		<< right
-		<< std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
-		<< " ms"
-		<< endl;
+	stdsort_end = chrono::steady_clock::now();
+	stdsort_src.clear();
+	stdsort_src.shrink_to_fit();
+
+	// Print the results.
+
+	const size_t NAME_FIELD_WIDTH = 11;
+	const size_t TIME_FIELD_WIDTH = 6;
+
+	std::vector<std::string> algorithms = {"cuda_sort", "qsort", "std::sort"};
+	std::vector<long long> times =
+	{
+		chrono::duration_cast<chrono::milliseconds>(cuda_end - cuda_begin).count(),
+		chrono::duration_cast<chrono::milliseconds>(qsort_end - qsort_begin).count(),
+		chrono::duration_cast<chrono::milliseconds>(stdsort_end - stdsort_begin).count()
+	};
+
+	for (size_t i = 0; i < algorithms.size(); ++i)
+	{
+		cout << setw(NAME_FIELD_WIDTH)
+			<< left << algorithms[i]
+			<< setw(TIME_FIELD_WIDTH) << right << times[i]
+			<< " ms"
+			<< endl;
+	}
 
 	delete[] orig_src;
-	delete[] cuda_src;
-	delete[] qsort_src;
 }
 
 // Primitive command line interface.

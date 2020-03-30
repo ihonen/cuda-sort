@@ -19,18 +19,31 @@
 
 using namespace std;
 
-// The status of the sort.
+// A struct containing the current status of the sort.
 template<typename T>
 struct merge_sort_ctx_t
 {
+	// The source buffer in GPU memory.
 	T* d_src;
+	// The destination buffer in GPU memory.
 	T* d_dest;
-	T* tmp;
+	// The total number of elements in the array.
 	size_t elem_count;
+	// Self-explanatory.
 	size_t size_bytes;
+	// How many elements there are in a chunk.
+	// A chunk is the data region a single thread is working on.
+	// In merge, two sorted subarrays are merged into
+	// a bigger subarray. The chunk size is the size of the two
+	// subarrays (or the size of the bigger subarray).
 	size_t elems_per_chunk;
+	// How many chunks there currently are, i.e. how many threads
+	// are running at the moment (one thread operates on one
+	// chunk).
 	size_t unmerged_chunks;
+	// How many GPU threads there are in a thread block.
 	size_t threads_per_block;
+	// How many GPU thread blocks there are in total.
 	size_t total_thread_blocks;
 };
 
@@ -43,6 +56,7 @@ struct merge_sort_cfg_t
 };
 
 // Just a stupid function to overwrite everything in the data cache.
+// Probably unnecessary, but ensures that the benchmarks are fair.
 void overwrite_dcache()
 {
 	// Bytes
@@ -54,7 +68,7 @@ void overwrite_dcache()
 	for (size_t i = 0; i < UINT64_COUNT; ++i) arr[i] = rand();
 }
 
-// Comparison function for qsort.
+// Comparison function for ascending qsort.
 template<typename T>
 __forceinline static inline int int_comp(const void* a, const void* b)
 {
@@ -86,14 +100,21 @@ __host__ void print_array_host(T* arr, size_t size)
 }
 
 // Performs parallel merging on the GPU.
+// Ctx contains the current status of the sort,
+// so each thread can figure out where the limits of
+// the region of data it is handling are.
 template<typename T>
 __global__ void device_merge(merge_sort_ctx_t<T>* ctx)
 {
+	// "Global" "thread id".
 	int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
 
+	// Store the data locations in local memory.
 	T* d_src = ctx->d_src;
 	T* d_dest = ctx->d_dest;
 
+	// Perform a normal merge as per the definition of merge sort.
+	// Compute the limits of the thread's data region based on thread id.
 	if (ctx->unmerged_chunks > thread_id)
 	{
 		size_t left = thread_id * ctx->elems_per_chunk;
@@ -139,7 +160,8 @@ __global__ void device_merge(merge_sort_ctx_t<T>* ctx)
 	}
 }
 
-// Performs a sequential merge on the CPU.
+// Performs a sequential merge on the CPU
+// according to the definition of merge sort.
 template<typename T>
 __host__ void host_merge(T* dest, const T* src, const size_t left, const size_t right)
 {
@@ -185,7 +207,7 @@ bool default_arg(const char* arg)
 template<typename T>
 T* cuda_sort(T* h_src, merge_sort_cfg_t cfg)
 {
-	// Initial context on the host.
+	// Place the context in the GPU's memory.
 	merge_sort_ctx_t<T>* d_ctx;
 	cudaMallocManaged(&d_ctx, sizeof(merge_sort_ctx_t<T>));
 	check_gpu_err();
@@ -203,24 +225,28 @@ T* cuda_sort(T* h_src, merge_sort_cfg_t cfg)
 	cudaMalloc(&d_ctx->d_dest, d_ctx->size_bytes);
 	check_gpu_err();
 
-	// Temporary results buffer.
+	// Intermediate results buffer in host memory.
 	T* h_tmp = new T[d_ctx->size_bytes];
 
 	// Copy the array to be sorted into GPU memory.
 	cudaMemcpy(d_ctx->d_src, h_src, d_ctx->size_bytes, cudaMemcpyHostToDevice);
 	check_gpu_err();
 
+	// Keep merging on the GPU as long as it's efficient.
 	while (d_ctx->unmerged_chunks >= cfg.max_cpu_threads * 32 /* Found this value to be good */)
 	{
 		// Figure out the total number of thread blocks needed for the computation.
 		d_ctx->total_thread_blocks = d_ctx->unmerged_chunks / d_ctx->threads_per_block;
 		if (d_ctx->unmerged_chunks % d_ctx->threads_per_block != 0) ++d_ctx->total_thread_blocks;
 
-		// Do a merge run.
+		// Do a merge run on the GPU.
 		device_merge<T> << <d_ctx->total_thread_blocks, d_ctx->threads_per_block >> > (d_ctx);
 		cudaDeviceSynchronize();
 		check_gpu_err();
 
+		// Two equally sized subarrays were merged,
+		// so double the chunk size and halve the
+		// number of unmerged chunks.
 		d_ctx->elems_per_chunk *= 2;
 		d_ctx->unmerged_chunks /= 2;
 
@@ -229,14 +255,14 @@ T* cuda_sort(T* h_src, merge_sort_cfg_t cfg)
 		swap(d_ctx->d_src, d_ctx->d_dest);
 	}
 
-	// Unswap.
+	// Unswap so d_dest contains the intermediate result.
 	swap(d_ctx->d_src, d_ctx->d_dest);
 
 	// Copy the GPU results into host memory.
 	cudaMemcpy(h_tmp, d_ctx->d_dest, d_ctx->size_bytes, cudaMemcpyDeviceToHost);
 	check_gpu_err();
 
-	// Copy the context into host memory (for better performance).
+	// Copy the context into host memory (for efficiency).
 	merge_sort_ctx_t<T> h_ctx;
 	cudaMemcpy(&h_ctx, d_ctx, sizeof(merge_sort_ctx_t<T>), cudaMemcpyDeviceToHost);
 	check_gpu_err();
@@ -247,9 +273,11 @@ T* cuda_sort(T* h_src, merge_sort_cfg_t cfg)
 	T* work_src = h_tmp;
 	T * work_dest = h_src;
 
-	// Do the last runs on the CPU.
+	// Do the last merge runs on the CPU.
 	while (h_ctx.unmerged_chunks != 0)
 	{
+		// It's not efficient to run too many CPU threads at a time, so
+		// run batches of threads with an appropriate number of threads per batch.
 		const size_t elems_per_thread = h_ctx.elem_count / h_ctx.unmerged_chunks;
 		const size_t threads_per_batch = std::min(h_ctx.unmerged_chunks, cfg.max_cpu_threads);
 		const size_t thread_batches = std::max((size_t)1ULL, h_ctx.unmerged_chunks / threads_per_batch);
@@ -281,6 +309,8 @@ T* cuda_sort(T* h_src, merge_sort_cfg_t cfg)
 	if (h_src != work_dest) memcpy(h_src, work_dest, h_ctx.size_bytes);
 
 #ifndef NDEBUG
+	// Ensure that the results are correct.
+
 	cout << "DEBUG: Checking cuda_sort result correctness" << endl;
 	for (size_t i = 0; i < h_ctx.elem_count; ++i)
 	{
@@ -306,12 +336,16 @@ T* cuda_sort(T* h_src, merge_sort_cfg_t cfg)
 	return h_src;
 }
 
+// Runs a benchmark comparing cuda_sort, qsort and std::sort.
+// T indicates the type of the data elements.
+// Cfg contains the rest of the necessary information.
 template<typename T>
 void run_benchmark(merge_sort_cfg_t cfg)
 {
+	// Seed the RNG.
 	srand(time(nullptr));
 
-	// Source buffer.
+	// Source buffer with randomized contents.
 	T* orig_src = new T[cfg.array_len];
 	for (size_t i = 0; i < cfg.array_len; ++i)
 		orig_src[i] = (T)rand();
@@ -384,6 +418,7 @@ void run_benchmark(merge_sort_cfg_t cfg)
 	delete[] qsort_src;
 }
 
+// Primitive command line interface.
 int main(int argc, char* argv[]) try
 {
 	merge_sort_cfg_t cfg;

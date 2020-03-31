@@ -2,7 +2,7 @@
 
 ## Description
 
-This project contains the source code of `cuda_sort` and a benchmark program that sorts arrays of integers and floating point numbers of various sizes with `cuda_sort`, `qsort` and `std::sort` and prints the results.
+This project contains the source code of `cuda_sort` and a benchmark program that sorts arrays of integers and floating point numbers of various sizes with `cuda_sort`, `thrust::sort` (Nvidia's own GPU-accelerated sort implementation) and `std::sort` and prints the results.
 
 The project is purely educational by nature; the code is not meant to be universally applicable.
 
@@ -10,9 +10,11 @@ The project is purely educational by nature; the code is not meant to be univers
 
 Below is a screenshot of the results of the benchmark.
 
-![](img/benchmark.png)
+![](img/benchmark_thrust.png)
 
-Interestingly, the relative performance of `cuda_sort` with regard to `std::sort` seems to vary greatly depending on the element size. The ratio is poorest with 64-bit elements, likely because the benchmark was run on a 64-bit Intel CPU.
+Obviously, the highly optimized `thrust::sort` is faster than `cuda_sort`. However, to my satisfaction, the performance of `cuda_sort` is in the same ballpark.
+
+Interestingly, it appears that both GPU sorts are slow in the 64-bit category, whereas the performance of `std::sort` seems rather constant.
 
 ## Usage
 

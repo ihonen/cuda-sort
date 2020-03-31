@@ -1,5 +1,9 @@
 #include "cuda_sort.cuh"
 
+#include <thrust/device_vector.h>
+#include <thrust/host_vector.h>
+#include <thrust/sort.h>
+
 #include <algorithm>
 #include <chrono>
 #include <iomanip>
@@ -63,10 +67,10 @@ void run_benchmark(cuda_sort_cfg_t cfg)
 
     chrono::steady_clock::time_point cuda_begin;
     chrono::steady_clock::time_point cuda_end;
-    chrono::steady_clock::time_point qsort_begin;
-    chrono::steady_clock::time_point qsort_end;
     chrono::steady_clock::time_point stdsort_begin;
     chrono::steady_clock::time_point stdsort_end;
+    chrono::steady_clock::time_point thrustsort_begin;
+    chrono::steady_clock::time_point thrustsort_end;
 
     // cuda_sort
 
@@ -81,18 +85,17 @@ void run_benchmark(cuda_sort_cfg_t cfg)
 
     delete[] cuda_src;
 
-    // qsort
-    
-    T* qsort_src = new T[cfg.array_len];
-    memcpy(qsort_src, orig_src, sizeof(T) * cfg.array_len);
-    
+    // thrust::sort
+
+    T* thrustsort_src = new T[cfg.array_len];
+    memcpy(thrustsort_src, orig_src, sizeof(T) * cfg.array_len);
+
     overwrite_dcache();
+    thrustsort_begin = chrono::steady_clock::now();
+    thrust::sort(thrustsort_src, thrustsort_src + cfg.array_len);
+    thrustsort_end = chrono::steady_clock::now();
 
-    qsort_begin = chrono::steady_clock::now();
-    qsort(qsort_src, cfg.array_len, sizeof(T), int_comp<T>);
-    qsort_end = chrono::steady_clock::now();
-
-    delete[] qsort_src;
+    delete[] thrustsort_src;
 
     // std::sort
 
@@ -111,15 +114,15 @@ void run_benchmark(cuda_sort_cfg_t cfg)
 
     // Print the results.
 
-    const size_t NAME_FIELD_WIDTH = 11;
+    const size_t NAME_FIELD_WIDTH = 14;
     const size_t TIME_FIELD_WIDTH = 6;
 
-    std::vector<std::string> algorithms = {"cuda_sort", "qsort", "std::sort"};
+    std::vector<std::string> algorithms = {"cuda_sort", "thrust::sort", "std::sort"};
     std::vector<long long> times =
     {
         chrono::duration_cast<chrono::milliseconds>(cuda_end - cuda_begin).count(),
-        chrono::duration_cast<chrono::milliseconds>(qsort_end - qsort_begin).count(),
-        chrono::duration_cast<chrono::milliseconds>(stdsort_end - stdsort_begin).count()
+        chrono::duration_cast<chrono::milliseconds>(thrustsort_end - thrustsort_begin).count(),
+        chrono::duration_cast<chrono::milliseconds>(stdsort_end - stdsort_begin).count(),
     };
 
     for (size_t i = 0; i < algorithms.size(); ++i)

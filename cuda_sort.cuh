@@ -168,7 +168,7 @@ T* cuda_sort(T* h_src,
 	         size_t cpu_threads = 8,
 	         size_t gpu_thread_block_size = 8)
 {
-	// Place the context in the GPU's memory.
+	// Place the context in GPU memory.
 	cuda_sort_ctx_t<T>* d_ctx;
 	cudaMallocManaged(&d_ctx, sizeof(cuda_sort_ctx_t<T>));
 	check_gpu_err();
@@ -179,7 +179,7 @@ T* cuda_sort(T* h_src,
 	d_ctx->elems_per_chunk     = 2;
 	d_ctx->threads_per_block   = gpu_thread_block_size;
 	d_ctx->total_thread_blocks = d_ctx->unmerged_chunks / d_ctx->threads_per_block
-		                       + d_ctx->unmerged_chunks % d_ctx->threads_per_block != 0;
+		                       + (d_ctx->unmerged_chunks % d_ctx->threads_per_block != 0);
 
 	// Allocate buffers in GPU memory.
 	cudaMalloc(&d_ctx->d_src, d_ctx->size_bytes);
@@ -196,7 +196,7 @@ T* cuda_sort(T* h_src,
 	{
 		// Figure out the total number of thread blocks needed for the computation.
 		d_ctx->total_thread_blocks = d_ctx->unmerged_chunks / d_ctx->threads_per_block
-			                         + d_ctx->unmerged_chunks % d_ctx->threads_per_block != 0;
+			                         + (d_ctx->unmerged_chunks % d_ctx->threads_per_block != 0);
 
 		// Do a merge run on the GPU.
 		device_merge<T><<<d_ctx->total_thread_blocks, d_ctx->threads_per_block>>>(d_ctx);

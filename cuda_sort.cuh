@@ -13,7 +13,7 @@
 
 // A struct containing the current status of the sort.
 template<typename T>
-struct merge_sort_ctx_t
+struct cuda_sort_ctx_t
 {
 	// The source buffer in GPU memory.
 	T* d_src;
@@ -37,14 +37,6 @@ struct merge_sort_ctx_t
 	size_t threads_per_block;
 	// How many GPU thread blocks there are in total.
 	size_t total_thread_blocks;
-};
-
-// Run configuration for cuda_sort.
-struct merge_sort_cfg_t
-{
-	size_t max_cpu_threads;
-	size_t block_size;
-	size_t array_len;
 };
 
 // Convenience wrapper for cudaGetLastError.
@@ -87,24 +79,24 @@ __host__ void print_array_host(T* arr, size_t size)
 // so each thread can figure out where the limits of
 // the region of data it is handling are.
 template<typename T>
-__global__ void device_merge(merge_sort_ctx_t<T>* ctx)
+__global__ void device_merge(cuda_sort_ctx_t<T>* ctx)
 {
 	// "Global" "thread id".
 	int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
 
 	// Store the data locations in local memory.
-	T* d_src = ctx->d_src;
+	T* d_src  = ctx->d_src;
 	T* d_dest = ctx->d_dest;
 
 	// Perform a normal merge as per the definition of merge sort.
 	// Compute the limits of the thread's data region based on thread id.
 	if (ctx->unmerged_chunks > thread_id)
 	{
-		size_t left = thread_id * ctx->elems_per_chunk;
+		size_t left  = thread_id * ctx->elems_per_chunk;
 		size_t right = left + ctx->elems_per_chunk;
 
-		const size_t mid = left + ((right - left) / 2);
-		size_t left_head = left;
+		const size_t mid  = left + ((right - left) / 2);
+		size_t left_head  = left;
 		size_t right_head = mid;
 		size_t write_head = left;
 
@@ -148,8 +140,8 @@ __global__ void device_merge(merge_sort_ctx_t<T>* ctx)
 template<typename T>
 __host__ void host_merge(T* dest, const T* src, const size_t left, const size_t right)
 {
-	const size_t mid = left + ((right - left) / 2);
-	size_t left_head = left;
+	const size_t mid  = left + ((right - left) / 2);
+	size_t left_head  = left;
 	size_t right_head = mid;
 	size_t write_head = left;
 
@@ -169,45 +161,45 @@ __host__ void host_merge(T* dest, const T* src, const size_t left, const size_t 
 }
 
 // Sorts the array in src.
-// The run configuration is provided in cfg.
 // Returns a pointer to src.
 template<typename T>
-T* cuda_sort(T* h_src, merge_sort_cfg_t cfg)
+T* cuda_sort(T* h_src,
+	         size_t array_length,
+	         size_t cpu_threads = 8,
+	         size_t gpu_thread_block_size = 8)
 {
 	// Place the context in the GPU's memory.
-	merge_sort_ctx_t<T>* d_ctx;
-	cudaMallocManaged(&d_ctx, sizeof(merge_sort_ctx_t<T>));
+	cuda_sort_ctx_t<T>* d_ctx;
+	cudaMallocManaged(&d_ctx, sizeof(cuda_sort_ctx_t<T>));
 	check_gpu_err();
 
-	d_ctx->elem_count = cfg.array_len;
-	d_ctx->size_bytes = d_ctx->elem_count * sizeof(T);
-	d_ctx->unmerged_chunks = d_ctx->elem_count / 2;
-	d_ctx->elems_per_chunk = 2;
-	d_ctx->threads_per_block = cfg.block_size;
-	d_ctx->total_thread_blocks = d_ctx->unmerged_chunks / d_ctx->threads_per_block;
-	if (d_ctx->unmerged_chunks % d_ctx->threads_per_block != 0) ++d_ctx->total_thread_blocks;
+	d_ctx->elem_count          = array_length;
+	d_ctx->size_bytes          = d_ctx->elem_count * sizeof(T);
+	d_ctx->unmerged_chunks     = d_ctx->elem_count / 2;
+	d_ctx->elems_per_chunk     = 2;
+	d_ctx->threads_per_block   = gpu_thread_block_size;
+	d_ctx->total_thread_blocks = d_ctx->unmerged_chunks / d_ctx->threads_per_block
+		                       + d_ctx->unmerged_chunks % d_ctx->threads_per_block != 0;
+
 	// Allocate buffers in GPU memory.
 	cudaMalloc(&d_ctx->d_src, d_ctx->size_bytes);
 	check_gpu_err();
 	cudaMalloc(&d_ctx->d_dest, d_ctx->size_bytes);
 	check_gpu_err();
 
-	// Intermediate results buffer in host memory.
-	T* h_tmp = new T[d_ctx->size_bytes];
-
-	// Copy the array to be sorted into GPU memory.
+	// Copy the array to be sorted to GPU memory.
 	cudaMemcpy(d_ctx->d_src, h_src, d_ctx->size_bytes, cudaMemcpyHostToDevice);
 	check_gpu_err();
 
 	// Keep merging on the GPU as long as it's efficient.
-	while (d_ctx->unmerged_chunks >= cfg.max_cpu_threads * 32 /* Found this value to be good */)
+	while (d_ctx->unmerged_chunks >= cpu_threads * 32 /* Found this value to be good */)
 	{
 		// Figure out the total number of thread blocks needed for the computation.
-		d_ctx->total_thread_blocks = d_ctx->unmerged_chunks / d_ctx->threads_per_block;
-		if (d_ctx->unmerged_chunks % d_ctx->threads_per_block != 0) ++d_ctx->total_thread_blocks;
+		d_ctx->total_thread_blocks = d_ctx->unmerged_chunks / d_ctx->threads_per_block
+			                         + d_ctx->unmerged_chunks % d_ctx->threads_per_block != 0;
 
 		// Do a merge run on the GPU.
-		device_merge<T> << <d_ctx->total_thread_blocks, d_ctx->threads_per_block >> > (d_ctx);
+		device_merge<T><<<d_ctx->total_thread_blocks, d_ctx->threads_per_block>>>(d_ctx);
 		cudaDeviceSynchronize();
 		check_gpu_err();
 
@@ -225,19 +217,22 @@ T* cuda_sort(T* h_src, merge_sort_cfg_t cfg)
 	// Unswap so d_dest contains the intermediate result.
 	swap(d_ctx->d_src, d_ctx->d_dest);
 
+	// Intermediate results buffer in host memory.
+	T* h_tmp = new T[d_ctx->size_bytes];
+
 	// Copy the GPU results into host memory.
 	cudaMemcpy(h_tmp, d_ctx->d_dest, d_ctx->size_bytes, cudaMemcpyDeviceToHost);
 	check_gpu_err();
 
 	// Copy the context into host memory (for efficiency).
-	merge_sort_ctx_t<T> h_ctx;
-	cudaMemcpy(&h_ctx, d_ctx, sizeof(merge_sort_ctx_t<T>), cudaMemcpyDeviceToHost);
+	cuda_sort_ctx_t<T> h_ctx;
+	cudaMemcpy(&h_ctx, d_ctx, sizeof(cuda_sort_ctx_t<T>), cudaMemcpyDeviceToHost);
 	check_gpu_err();
 
 	std::vector<std::thread*> threads;
 
 	// These can be safely swapped.
-	T* work_src = h_tmp;
+	T* work_src  = h_tmp;
 	T* work_dest = h_src;
 
 	// Do the last merge runs on the CPU.
@@ -245,15 +240,15 @@ T* cuda_sort(T* h_src, merge_sort_cfg_t cfg)
 	{
 		// It's not efficient to run too many CPU threads at a time, so
 		// run batches of threads with an appropriate number of threads per batch.
-		const size_t elems_per_thread = h_ctx.elem_count / h_ctx.unmerged_chunks;
-		const size_t threads_per_batch = std::min(h_ctx.unmerged_chunks, cfg.max_cpu_threads);
-		const size_t thread_batches = std::max((size_t)1ULL, h_ctx.unmerged_chunks / threads_per_batch);
+		const size_t elems_per_thread  = h_ctx.elem_count / h_ctx.unmerged_chunks;
+		const size_t threads_per_batch = std::min(h_ctx.unmerged_chunks, cpu_threads);
+		const size_t thread_batches    = std::max((size_t)1ULL, h_ctx.unmerged_chunks / threads_per_batch);
 
 		for (size_t j = 0; j < thread_batches; ++j)
 		{
 			for (size_t i = 0; i < threads_per_batch; ++i)
 			{
-				size_t left = (j * elems_per_thread * threads_per_batch) + (i * elems_per_thread);
+				size_t left  = (j * elems_per_thread * threads_per_batch) + (i * elems_per_thread);
 				size_t right = left + elems_per_thread;
 				threads.push_back(new std::thread(host_merge<T>, work_dest, work_src, left, right));
 			}
@@ -273,19 +268,21 @@ T* cuda_sort(T* h_src, merge_sort_cfg_t cfg)
 
 	// Unswap if necessary.
 	swap(work_src, work_dest);
+	// The last write may not have been into h_src, so ensure that h_src
+	// will contain the final result.
 	if (h_src != work_dest) memcpy(h_src, work_dest, h_ctx.size_bytes);
 
 #ifndef NDEBUG
 	// Ensure that the results are correct.
 
-	cout << "DEBUG: Checking cuda_sort result correctness" << endl;
+	std::cout << "DEBUG: Checking cuda_sort result correctness" << std::endl;
 	for (size_t i = 0; i < h_ctx.elem_count; ++i)
 	{
 		if (i == 0) continue;
 
 		if (h_src[i] < h_src[i - 1])
 		{
-			cout << "ERROR: Erroneous cuda_sort output (first erroneous index = " << i << ", value = " << h_src[i] << ")!" << endl;
+			std::cout << "ERROR: Erroneous cuda_sort output (first erroneous index = " << i << ", value = " << h_src[i] << ")!" << std::endl;
 			break;
 		}
 	}

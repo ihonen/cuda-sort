@@ -11,6 +11,14 @@
 
 using namespace std;
 
+// Run configuration for cuda_sort.
+struct cuda_sort_cfg_t
+{
+	size_t max_cpu_threads;
+	size_t block_size;
+	size_t array_len;
+};
+
 // Just a stupid function to overwrite everything in the data cache.
 // Probably unnecessary, but ensures that the benchmarks are fair.
 void overwrite_dcache()
@@ -43,7 +51,7 @@ bool default_arg(const char* arg)
 // T indicates the type of the data elements.
 // Cfg contains the rest of the necessary information.
 template<typename T>
-void run_benchmark(merge_sort_cfg_t cfg)
+void run_benchmark(cuda_sort_cfg_t cfg)
 {
 	// Seed the RNG.
 	srand(time(nullptr));
@@ -68,7 +76,7 @@ void run_benchmark(merge_sort_cfg_t cfg)
 	overwrite_dcache();
 
 	cuda_begin = chrono::steady_clock::now();
-	cuda_sort<T>(cuda_src, cfg);
+	cuda_sort<T>(cuda_src, cfg.array_len, cfg.max_cpu_threads, cfg.block_size);
 	cuda_end = chrono::steady_clock::now();
 
 	delete[] cuda_src;
@@ -129,7 +137,7 @@ void run_benchmark(merge_sort_cfg_t cfg)
 // Primitive command line interface.
 int main(int argc, char* argv[]) try
 {
-	merge_sort_cfg_t cfg;
+	cuda_sort_cfg_t cfg;
 
 	if (argc < 4)
 	{

@@ -1,0 +1,36 @@
+anton@DESKTOP-0L3USQP MINGW64 ~/source/repos/cuda_sort/x64/Release (master)
+$ ./cuda_sort.exe 8 8 27
+
+DEBUG: Max CPU threads: 8
+DEBUG: GPU thread block size: 8
+DEBUG: Array length: 134217728
+
+8-BIT INTEGER SORT
+cuda_sort    1515 ms
+qsort        6434 ms
+std::sort    3215 ms
+
+16-BIT INTEGER SORT
+cuda_sort    1420 ms
+qsort       10157 ms
+std::sort    6240 ms
+
+32-BIT INTEGER SORT
+cuda_sort    2080 ms
+qsort       11171 ms
+std::sort    6380 ms
+
+64-BIT INTEGER SORT
+cuda_sort    3799 ms
+qsort       12956 ms
+std::sort    6421 ms
+
+32-BIT FLOATING POINT SORT
+cuda_sort    2070 ms
+qsort       13369 ms
+std::sort    7131 ms
+
+64-BIT FLOATING POINT SORT
+cuda_sort    3699 ms
+qsort       14312 ms
+std::sort    6976 ms

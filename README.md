@@ -6,6 +6,20 @@ This project contains the source code of `cuda_sort` and a benchmark program tha
 
 The project is purely educational by nature; the code is not meant to be universally applicable.
 
+## Working principle
+
+`Cuda_sort` works exactly like an ordinary merge sort would, except that the merging is done in parallel rather than sequentially in a recursive manner, and both the GPU and CPU are involved. The distribution of work between the two processing units is visualized below.
+
+![](img/visualization.png)
+
+In summary:
+
+1. The input data is copied from RAM to VRAM.
+2. The GPU performs parallel merging as long as it is more efficient than merging on the CPU.
+3. The input data is copied from VRAM to RAM.
+4. The CPU performs parallel merging on multiple threads.
+5. The final merge is done sequentially on a single CPU thread.
+
 ## Performance
 
 Below is a screenshot of the results of the benchmark.

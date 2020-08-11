@@ -70,4 +70,4 @@ On Windows:
 
 ## License
 
-The If-you-are-crazy-enough-to-use-this-go-ahead License 1.0. The author will not be responsible for the frying of any piece of silicon or any other form of harm that might take place.
+The If-you-are-crazy-enough-to-use-this-go-ahead License 1.0. The author will not be responsible for the frying of any piece of silicon or any other form of harm that could ensue.

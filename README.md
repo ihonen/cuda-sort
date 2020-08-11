@@ -4,7 +4,7 @@
 
 This project contains the source code of `cuda_sort` and a benchmark program that sorts arrays of integers and floating point numbers of various sizes with `cuda_sort`, `thrust::sort` (Nvidia's own GPU-accelerated sort implementation) and `std::sort` and prints the results.
 
-The project is purely educational by nature; the code is not meant to be universally applicable.
+The project is purely educational by nature; the code is not meant for general use.
 
 ## Working principle
 
